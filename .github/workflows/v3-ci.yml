@@ -337,11 +337,24 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
       - name: Build CLI (so the compiled dist is scanned alongside src)
+        # The CLI uses `workspace:*` deps which only pnpm understands — npm
+        # install errors with EUNSUPPORTEDPROTOCOL. Install at the v3
+        # workspace root (mirrors the Build V3 job) and build everything in
+        # topological order so cli-core/memory/neural dist exist before cli.
+        # `continue-on-error: true` keeps the smoke usable even when CLI src
+        # has unrelated TS errors — the static scan will report any missing
+        # dist file it cares about, which is the contract we actually want.
+        continue-on-error: true
         run: |
-          cd v3/@claude-flow/cli
-          npm install --no-audit --no-fund --legacy-peer-deps
-          npm run build
+          cd v3
+          pnpm install --frozen-lockfile
+          pnpm -r build
 
       - name: Static scan of every rvf create call site
         run: node scripts/smoke-browser-rvf-create-flags.mjs

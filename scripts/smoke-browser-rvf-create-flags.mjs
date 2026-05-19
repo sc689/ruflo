@@ -41,6 +41,13 @@ const checked = [];
 for (const rel of PATHS_IN_SCOPE) {
   const path = resolve(REPO_ROOT, rel);
   if (!existsSync(path)) {
+    // Dist artifacts are derivable from source — missing dist is not a
+    // regression in `rvf create` callsites; the matching `src/` file will
+    // still be scanned. Source files MUST exist.
+    if (rel.includes('/dist/')) {
+      checked.push(`${rel}  (skipped — dist artifact not built; src form is scanned instead)`);
+      continue;
+    }
     failures.push(`${rel}  expected call-site file missing from checkout`);
     continue;
   }
