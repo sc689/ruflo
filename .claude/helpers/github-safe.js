@@ -19,7 +19,7 @@
  *   ./github-safe.js pr create --title "Title" --body "Complex body"
  */
 
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { writeFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -111,10 +111,12 @@ if ((command === 'issue' || command === 'pr') &&
         process.exit(0);
       }
 
-      const ghCommand = `gh ${command} ${subcommand} ${newArgs.join(' ')}`;
-      console.log(`Executing: ${ghCommand}`);
+      const ghArgv = [command, subcommand, ...newArgs];
+      console.log(`Executing: gh ${ghArgv.join(' ')}`);
 
-      execSync(ghCommand, {
+      // Use execFileSync to avoid shell interpolation — args are passed as an
+      // array so shell metacharacters in tmpFile path cannot be exploited.
+      execFileSync('gh', ghArgv, {
         stdio: 'inherit',
         timeout: 30000,
       });
@@ -127,13 +129,13 @@ if ((command === 'issue' || command === 'pr') &&
       try { unlinkSync(tmpFile); } catch (_) { /* ignore cleanup errors */ }
     }
   } else {
-    // No body content — execute normally (no injection risk).
+    // No body content — execute normally (no injection risk for args).
     if (process.env.GITHUB_SAFE_DRY_RUN === '1') {
       console.log(`[DRY-RUN] gh ${args.join(' ')}`);
       process.exit(0);
     }
     try {
-      execSync(`gh ${args.join(' ')}`, { stdio: 'inherit' });
+      execFileSync('gh', args, { stdio: 'inherit' });
     } catch (error) {
       console.error('[ERROR]', error.message);
       process.exit(1);
@@ -146,7 +148,7 @@ if ((command === 'issue' || command === 'pr') &&
     process.exit(0);
   }
   try {
-    execSync(`gh ${args.join(' ')}`, { stdio: 'inherit' });
+    execFileSync('gh', args, { stdio: 'inherit' });
   } catch (error) {
     console.error('[ERROR]', error.message);
     process.exit(1);

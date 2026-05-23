@@ -26,7 +26,7 @@
  * written so the raw chronology is human-readable in PR reviews.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve as path_resolve, dirname as path_dirname } from 'node:path';
@@ -62,7 +62,9 @@ const NPM_PKGS_HEADLINE = [
 
 function fetchClones(repo) {
   try {
-    const out = execSync(`gh api repos/${repo}/traffic/clones`, {
+    // Use execFileSync with array args — repo name is program-controlled but
+    // array form prevents accidental shell metacharacter expansion (CWE-78).
+    const out = execFileSync('gh', ['api', `repos/${repo}/traffic/clones`], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
