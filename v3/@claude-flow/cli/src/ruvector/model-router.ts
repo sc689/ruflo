@@ -177,6 +177,23 @@ const BANDIT_REWARDS: Record<ClaudeModel, Record<'success' | 'failure' | 'escala
 /**
  * Router state for persistence
  */
+/**
+ * Complexity bucket for per-task bandit priors. Bands mirror
+ * MODEL_CAPABILITIES.maxComplexity (haiku 0.4, sonnet 0.7) so the taxonomy
+ * isn't arbitrary. Keying priors by bucket fixes the global-bandit defect where
+ * failures on one task type suppressed a model for ALL task types (audit
+ * docs/reviews/intelligence-system-audit-2026-05-29.md; see ADR-142).
+ */
+export type ComplexityBucket = 'low' | 'med' | 'high';
+
+function complexityBucket(score: number): ComplexityBucket {
+  if (score < 0.4) return 'low';   // haiku territory
+  if (score < 0.7) return 'med';   // sonnet territory
+  return 'high';                    // opus territory
+}
+
+type BucketedPriors = Record<ComplexityBucket, Record<ClaudeModel, BetaPrior>>;
+
 interface RouterState {
   totalDecisions: number;
   modelDistribution: Record<ClaudeModel, number>;
@@ -191,12 +208,16 @@ interface RouterState {
     outcome: 'success' | 'failure' | 'escalated';
     timestamp: string;
   }>;
+  /** Persisted-schema version. v2 = per-bucket priors (ADR-142). */
+  version?: number;
   /**
-   * Beta(α, β) priors per model — populated by recordOutcome via Thompson
-   * sampling. Defaults to {alpha:1,beta:1} (uniform). After ~50 outcomes
-   * these converge so the router auto-corrects against tier overuse.
+   * Beta(α, β) priors per complexity bucket per model — populated by
+   * recordOutcome via Thompson sampling. Defaults to {alpha:1,beta:1}
+   * (uniform). Keyed by bucket so e.g. haiku failures on hard tasks don't
+   * suppress haiku for easy tasks. Old flat per-model files migrate forward
+   * (see migratePriors).
    */
-  priors?: Record<ClaudeModel, BetaPrior>;
+  priors?: BucketedPriors;
 }
 
 // ============================================================================
@@ -264,6 +285,40 @@ function defaultBanditPriors(): Record<ClaudeModel, BetaPrior> {
     opus:    { alpha: 1, beta: 1 },
     inherit: { alpha: 1, beta: 1 },
   };
+}
+
+/** Uniform priors for every complexity bucket (cold start). */
+function defaultBucketedPriors(): BucketedPriors {
+  return { low: defaultBanditPriors(), med: defaultBanditPriors(), high: defaultBanditPriors() };
+}
+
+function clonePriors(p: Record<ClaudeModel, BetaPrior>): Record<ClaudeModel, BetaPrior> {
+  return { haiku: { ...p.haiku }, sonnet: { ...p.sonnet }, opus: { ...p.opus }, inherit: { ...p.inherit } };
+}
+
+/**
+ * Forward-migrate a persisted `priors` field of any layout to the bucketed
+ * shape, never throwing (ADR-142):
+ *  - missing/garbage → fresh uniform buckets
+ *  - already bucketed (has `low.haiku`) → kept, backfilling any missing bucket
+ *  - flat per-model (v1 bandit) → seed ALL buckets from it (lossless: prior
+ *    learning becomes a shared starting point that then diverges per bucket)
+ */
+function migratePriors(p: unknown): BucketedPriors {
+  if (!p || typeof p !== 'object') return defaultBucketedPriors();
+  const obj = p as Record<string, any>;
+  if (obj.low && typeof obj.low === 'object' && obj.low.haiku) {
+    return {
+      low: obj.low,
+      med: obj.med ?? clonePriors(obj.low),
+      high: obj.high ?? clonePriors(obj.low),
+    };
+  }
+  if (obj.haiku && typeof obj.haiku.alpha === 'number') {
+    const flat = obj as Record<ClaudeModel, BetaPrior>;
+    return { low: clonePriors(flat), med: clonePriors(flat), high: clonePriors(flat) };
+  }
+  return defaultBucketedPriors();
 }
 
 // ============================================================================
@@ -514,8 +569,10 @@ export class ModelRouter {
     scores: Record<ClaudeModel, number>,
     complexityScore: number
   ): { model: ClaudeModel; confidence: number; uncertainty: number } {
-    // Thompson sampling: combine deterministic score with bandit posterior
-    const priors = this.state.priors ?? defaultBanditPriors();
+    // Thompson sampling: combine deterministic score with bandit posterior,
+    // keyed by complexity bucket (ADR-142) so learning is task-type-local.
+    const bucketed = this.state.priors ?? defaultBucketedPriors();
+    const priors = bucketed[complexityBucket(complexityScore)] ?? defaultBanditPriors();
     const sampledScores: Record<ClaudeModel, number> = {
       haiku:   scores.haiku   * sampleBeta(priors.haiku.alpha,   priors.haiku.beta),
       sonnet:  scores.sonnet  * sampleBeta(priors.sonnet.alpha,  priors.sonnet.beta),
@@ -611,11 +668,17 @@ export class ModelRouter {
       this.consecutiveFailures[model] = 0;
     }
 
-    // Track in history
+    // Re-derive this task's complexity bucket from the task string (the MCP
+    // outcome payload carries no complexity), using the SAME analyzeComplexity
+    // path route() uses so record-time and select-time buckets match.
+    const taskScore = this.analyzeComplexity(task).score;
+    const bucket = complexityBucket(taskScore);
+
+    // Track in history (record THIS task's score, not the running average)
     this.state.learningHistory.push({
       task: task.slice(0, 100),
       model,
-      complexity: this.state.avgComplexity,
+      complexity: taskScore,
       outcome,
       timestamp: new Date().toISOString(),
     });
@@ -632,10 +695,11 @@ export class ModelRouter {
     // Thompson sampling update (#1772): cost-adjusted Bernoulli reward.
     // Haiku-success > Sonnet-success > Opus-success (Opus on simple tasks
     // is wasteful even when correct). Failure/escalation always β++.
-    if (!this.state.priors) this.state.priors = defaultBanditPriors();
+    if (!this.state.priors) this.state.priors = defaultBucketedPriors();
+    const bp = this.state.priors[bucket] ?? (this.state.priors[bucket] = defaultBanditPriors());
     const reward = BANDIT_REWARDS[model]?.[outcome] ?? 0.5;
-    this.state.priors[model].alpha += reward;
-    this.state.priors[model].beta += 1 - reward;
+    bp[model].alpha += reward;
+    bp[model].beta += 1 - reward;
 
     this.saveState();
   }
@@ -673,17 +737,20 @@ export class ModelRouter {
       circuitBreakerTrips: 0,
       lastUpdated: new Date().toISOString(),
       learningHistory: [],
-      priors: defaultBanditPriors(),
+      version: 2,
+      priors: defaultBucketedPriors(),
     };
 
     try {
       const fullPath = join(process.cwd(), this.config.statePath);
       if (existsSync(fullPath)) {
         const data = readFileSync(fullPath, 'utf-8');
-        const loaded = JSON.parse(data) as Partial<RouterState>;
-        // Backfill priors for state files written by pre-bandit cli versions.
-        if (!loaded.priors) loaded.priors = defaultBanditPriors();
-        return { ...defaultState, ...loaded };
+        const loaded = JSON.parse(data) as Partial<RouterState> & { priors?: unknown };
+        // ADR-142: forward-migrate priors of ANY layout (missing / flat v1 /
+        // already-bucketed) to the bucketed shape without data loss or throwing.
+        loaded.priors = migratePriors(loaded.priors);
+        loaded.version = 2;
+        return { ...defaultState, ...(loaded as Partial<RouterState>) };
       }
     } catch {
       // Ignore load errors
@@ -721,7 +788,8 @@ export class ModelRouter {
       circuitBreakerTrips: 0,
       lastUpdated: new Date().toISOString(),
       learningHistory: [],
-      priors: defaultBanditPriors(),
+      version: 2,
+      priors: defaultBucketedPriors(),
     };
     this.consecutiveFailures = { haiku: 0, sonnet: 0, opus: 0, inherit: 0 };
     this.decisionCount = 0;
@@ -733,13 +801,24 @@ export class ModelRouter {
    * dashboards, and the pending hooks_intelligence_stats integration that
    * surfaces convergence in the dashboard. Returns a copy.
    */
-  getBanditPriors(): Record<ClaudeModel, BetaPrior> {
-    const p = this.state.priors ?? defaultBanditPriors();
+  getBanditPriors(bucket: ComplexityBucket = 'med'): Record<ClaudeModel, BetaPrior> {
+    const bucketed = this.state.priors ?? defaultBucketedPriors();
+    const p = bucketed[bucket] ?? defaultBanditPriors();
     return {
       haiku:   { ...p.haiku },
       sonnet:  { ...p.sonnet },
       opus:    { ...p.opus },
       inherit: { ...p.inherit },
+    };
+  }
+
+  /** All bucketed priors (copy) — for dashboards/tests. */
+  getBucketedPriors(): BucketedPriors {
+    const b = this.state.priors ?? defaultBucketedPriors();
+    return {
+      low: clonePriors(b.low ?? defaultBanditPriors()),
+      med: clonePriors(b.med ?? defaultBanditPriors()),
+      high: clonePriors(b.high ?? defaultBanditPriors()),
     };
   }
 }

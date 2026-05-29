@@ -335,7 +335,7 @@ export function computeSimilarity(a: Float32Array, b: Float32Array): number {
 export function getStatus(): {
   available: boolean;
   wasmAccelerated: boolean;
-  backend: 'ruvector-wasm' | 'ruvector' | 'fallback';
+  backend: 'ruvector-stub-search-disabled' | 'ruvector-native' | 'fallback';
 } {
   if (!isAvailable) {
     return {
@@ -345,10 +345,17 @@ export function getStatus(): {
     };
   }
 
-  const wasmAccelerated = isWASMAccelerated();
+  // HONESTY (audit docs/reviews/intelligence-system-audit-2026-05-29.md):
+  // ruvector's `isWasm()` does NOT mean "WASM-accelerated" — there is no WASM
+  // HNSW build in this stack. `isWasm()===true` means the do-nothing STUB is
+  // active (search() returns []), i.e. native NAPI failed to load. So
+  // wasmAccelerated===false is the HEALTHY state (native NAPI is the fastest
+  // backend available). We label the stub honestly so a regression into it is
+  // visible instead of being mistaken for a faster mode.
+  const stubActive = isWASMAccelerated();
   return {
     available: true,
-    wasmAccelerated,
-    backend: wasmAccelerated ? 'ruvector-wasm' : 'ruvector',
+    wasmAccelerated: stubActive,
+    backend: stubActive ? 'ruvector-stub-search-disabled' : 'ruvector-native',
   };
 }
