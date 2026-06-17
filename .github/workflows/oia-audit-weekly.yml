@@ -112,10 +112,14 @@ jobs:
         run: |
           set -e
           # iter-67 fastest path: --baseline-file skips audit-list + memory roundtrip
+          # iter 79 — also gate on new HIGH-severity findings. Catches the
+          # case where structure stayed similar but a security regression
+          # appeared (e.g., new mcp-scan HIGH finding). Either gate can fire.
           node plugins/ruflo-metaharness/scripts/drift-from-history.mjs \
             --baseline-file /tmp/prior/oia-audit.json \
             --dry-run \
             --threshold 0.85 \
+            --alert-on-new-severity high \
             --format json \
             > /tmp/drift-trend.json || true
           # Extract verdict for the workflow summary

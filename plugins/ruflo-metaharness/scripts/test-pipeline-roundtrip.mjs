@@ -522,6 +522,53 @@ try {
   assert(trend11c.delta?.findings?.clearedCount === 0,
     `Stage 11c: identical findings → clearedCount === 0`);
 
+  // ──────────────────────────────────────────────────────────────
+  // STAGE 12 (iter 79) — --alert-on-new-severity orthogonal gate
+  //
+  // Iter 78 added the gate. Iter 79 wires it into the weekly cron.
+  // This stage verifies the gate fires correctly through the
+  // drift-from-history wrapper:
+  //   - baseline has no findings + current has 1 medium finding
+  //   - --threshold 0.5 (similarity stays above)
+  //   - --alert-on-new-severity medium should trigger
+  //
+  // Catches the "structural similarity high but new security
+  // finding" case that iter-78 closed.
+  // ──────────────────────────────────────────────────────────────
+  console.log('\nStage 12 — --alert-on-new-severity orthogonal gate (iter 79)');
+
+  // Re-use baseClean (no findings) from Stage 11
+  // Run drift-from-history with --alert-on-new-severity info
+  // (real ruflo audit has 1 INFO finding → introduced=1)
+  const stage12Run = runNode('drift-from-history.mjs', [
+    '--baseline-file', baseCleanPath,
+    '--dry-run',
+    '--threshold', '0.5',
+    '--alert-on-new-severity', 'info',
+    '--format', 'json',
+  ], 120_000);
+  const m12 = /\{[\s\S]*\}/.exec(stage12Run.stdout);
+  assert(m12 !== null, 'Stage 12: drift-from-history produced JSON');
+  const stage12 = JSON.parse(m12[0]);
+
+  // The orthogonal gate fires
+  assert(stage12.alert?.triggered === true,
+    'Stage 12: --alert-on-new-severity info triggers on ruflo current INFO finding');
+  // Reason mentions severity, not similarity (structural is fine at threshold 0.5)
+  const reasons = stage12.alert?.reasons ?? [];
+  const hasSeverityReason = reasons.some((r) => /finding\(s\) at or above/.test(r));
+  assert(hasSeverityReason,
+    `Stage 12: reasons mention new-finding severity (got ${JSON.stringify(reasons)})`);
+  // elevatedFindings populated
+  assert(Array.isArray(stage12.alert?.elevatedFindings) && stage12.alert.elevatedFindings.length >= 1,
+    `Stage 12: elevatedFindings non-empty (got ${stage12.alert?.elevatedFindings?.length})`);
+  // CLI exit reflects the alert
+  assert(stage12Run.status === 1,
+    `Stage 12: drift-from-history exit=1 on severity alert (got ${stage12Run.status})`);
+  // newSeverityThreshold echoed in payload
+  assert(stage12.alert?.newSeverityThreshold === 'info',
+    'Stage 12: alert.newSeverityThreshold echoed');
+
 } finally {
   try { rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
 }

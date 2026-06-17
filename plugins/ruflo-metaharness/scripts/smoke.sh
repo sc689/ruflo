@@ -191,6 +191,22 @@ grep -q "execCli(\[\s*'-y'\s*,\s*'metaharness@latest'" "$F" 2>/dev/null || \
 grep -q "cwd: opts" "$F" || miss="$miss no-cwd-passthrough"
 [[ -z "$miss" ]] && ok || bad "$miss"
 
+step "17z42. weekly cron uses --alert-on-new-severity + Stage 12 verifies (iter 79)"
+miss=""
+# Weekly cron wires the gate
+W="$ROOT/../../.github/workflows/oia-audit-weekly.yml"
+grep -q -- "--alert-on-new-severity high" "$W" 2>/dev/null || miss="$miss no-cron-wired"
+# Roundtrip Stage 12 added
+F="$ROOT/scripts/test-pipeline-roundtrip.mjs"
+grep -q "Stage 12 — --alert-on-new-severity orthogonal gate" "$F" 2>/dev/null || miss="$miss no-stage-12"
+grep -q "Stage 12: --alert-on-new-severity info triggers" "$F" 2>/dev/null || miss="$miss no-trigger-assert"
+grep -q "Stage 12: reasons mention new-finding severity" "$F" 2>/dev/null || miss="$miss no-reason-assert"
+grep -q "Stage 12: elevatedFindings non-empty" "$F" 2>/dev/null || miss="$miss no-elevated-assert"
+grep -q "Stage 12: alert.newSeverityThreshold echoed" "$F" 2>/dev/null || miss="$miss no-threshold-echo"
+# Runtime: roundtrip passes (≥66)
+node "$F" 2>&1 | grep -qE "(6[6-9]|[7-9][0-9]+) passed, 0 failed" || miss="$miss roundtrip-fewer-than-66"
+[[ -z "$miss" ]] && ok || bad "$miss"
+
 step "17z41. drift-from-history --alert-on-new-severity gate (iter 78)"
 miss=""
 F="$ROOT/scripts/drift-from-history.mjs"
