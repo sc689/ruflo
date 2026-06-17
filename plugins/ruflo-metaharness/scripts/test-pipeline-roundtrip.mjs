@@ -340,6 +340,53 @@ try {
   assert(dfh.alert?.triggered === false,
     'drift-from-history self-match alert NOT triggered at default threshold (0.95)');
 
+  // ──────────────────────────────────────────────────────────────
+  // STAGE 9 (iter 75) — drift-from-history detects drift via fast path
+  //
+  // Stage 8 proved the fast path correctly identifies self-match.
+  // This stage proves it also CATCHES drift — feeds a mutated baseline
+  // file and asserts the verdict flips. Without this, a regression
+  // that breaks the fast path's similarity computation would still
+  // pass Stage 8 (which only checks the identity case).
+  //
+  // Mutation: re-uses Stage 7's mutated audit shape, written to a
+  // separate baseline file. drift-from-history runs fresh oia-audit
+  // against current state and diffs against the mutated baseline.
+  // ──────────────────────────────────────────────────────────────
+  console.log('\nStage 9 — drift-from-history fastpath catches mutation (iter 75)');
+  // mutatedPath was already populated in Stage 7. Re-use as baseline-file.
+  const dfhDriftRun = runNode('drift-from-history.mjs', [
+    '--baseline-file', mutatedPath,
+    '--dry-run',
+    '--threshold', '0.95',
+    '--format', 'json',
+  ], 120_000);
+  const dfhDriftMatch = /\{[\s\S]*\}/.exec(dfhDriftRun.stdout);
+  assert(dfhDriftMatch !== null, 'drift-from-history with mutated baseline produced JSON');
+  const dfhDrift = JSON.parse(dfhDriftMatch[0]);
+
+  // Fast path still fired
+  assert(dfhDrift.timing?.usedBaselineFile === true,
+    'Stage 9 fastpath: usedBaselineFile === true');
+
+  // Drift detected — same invariants as Stage 7 but via the wrapper
+  const dfhSd = dfhDrift.drift?.structuralDistance;
+  assert(typeof dfhSd === 'object', 'Stage 9: structuralDistance present');
+  assert(dfhSd.verdict !== 'near-identical',
+    `Stage 9: verdict !== near-identical (got ${dfhSd?.verdict}) — fastpath catches drift`);
+  assert(dfhSd.overall < 1,
+    `Stage 9: overall < 1 (got ${dfhSd?.overall})`);
+  assert(dfhSd.distance > 0,
+    `Stage 9: distance > 0 (got ${dfhSd?.distance})`);
+
+  // Alert end-to-end via the fast path
+  // (mutation pushes overall ~0.7, below default 0.95 threshold → triggered)
+  assert(dfhDrift.alert?.triggered === true,
+    'Stage 9: --threshold 0.95 fires on mutated baseline via fastpath');
+  // Exit code reflects alert
+  assert(dfhDriftRun.status === 1,
+    `Stage 9: drift-from-history exit=1 when alert triggered (got ${dfhDriftRun.status})`);
+
 } finally {
   try { rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
 }

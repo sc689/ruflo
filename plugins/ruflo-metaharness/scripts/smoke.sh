@@ -191,6 +191,18 @@ grep -q "execCli(\[\s*'-y'\s*,\s*'metaharness@latest'" "$F" 2>/dev/null || \
 grep -q "cwd: opts" "$F" || miss="$miss no-cwd-passthrough"
 [[ -z "$miss" ]] && ok || bad "$miss"
 
+step "17z38. roundtrip Stage 9 — drift-from-history fastpath catches mutation (iter 75)"
+miss=""
+F="$ROOT/scripts/test-pipeline-roundtrip.mjs"
+grep -q "Stage 9 — drift-from-history fastpath catches mutation" "$F" 2>/dev/null || miss="$miss no-stage-9"
+grep -q "Stage 9 fastpath: usedBaselineFile === true" "$F" 2>/dev/null || miss="$miss no-fastpath-assert"
+grep -q "Stage 9: verdict !== near-identical" "$F" 2>/dev/null || miss="$miss no-verdict-flip-assert"
+grep -q "Stage 9: --threshold 0.95 fires on mutated baseline via fastpath" "$F" 2>/dev/null || miss="$miss no-alert-fires-assert"
+grep -q "Stage 9: drift-from-history exit=1" "$F" 2>/dev/null || miss="$miss no-exit-1-assert"
+# Runtime: roundtrip passes (≥46 — iter 75 took it from 38)
+node "$F" 2>&1 | grep -qE "(4[6-9]|[5-9][0-9]+) passed, 0 failed" || miss="$miss roundtrip-fewer-than-46"
+[[ -z "$miss" ]] && ok || bad "$miss"
+
 step "17z37. ADR-150 architectural-constraint negative guards (iter 74)"
 miss=""
 # Guard 1 — ADR-150 §Sandboxing: `harness from-repo` must never be wrapped
