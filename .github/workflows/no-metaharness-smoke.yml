@@ -34,7 +34,9 @@ on:
 jobs:
   smoke-without-metaharness:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # iter 136: 10m → 20m — consistently hit 10m wall on shared runners
+    # (#2405 PR run + manual re-run both canceled at exactly 10m0s).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

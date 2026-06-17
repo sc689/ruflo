@@ -108,7 +108,10 @@ jobs:
 
   router-compat:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # iter 136: 5m → 12m — parallel-pipeline e2e + bench-overhead step
+    # consistently exceeds 5m on shared runners (#2405 PR run + manual re-run
+    # both canceled at exactly 5m0s).
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
